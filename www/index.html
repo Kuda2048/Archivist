@@ -23,6 +23,23 @@
         <button class="sm-btn danger" id="clearBtn">🗑 Clear library</button>
         <span class="count" id="countLabel"></span>
     </div>
+    <div class="filter-bar" id="filterBar">
+        <select id="filterProvider" aria-label="Filter by provider">
+            <option value="">All providers</option>
+            <option value="claude">Claude</option>
+            <option value="chatgpt">ChatGPT</option>
+        </select>
+        <select id="filterSender" aria-label="Filter by sender">
+            <option value="">Anyone</option>
+            <option value="human">Me</option>
+            <option value="assistant">Assistant</option>
+        </select>
+        <select id="filterDate" aria-label="Filter by date">
+            <option value="">Any time</option>
+            <option value="month">Past month</option>
+            <option value="year">Past year</option>
+        </select>
+    </div>
 
     <div id="listView"></div>
     <div id="readerView" style="display:none;"></div>

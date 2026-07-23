@@ -2,19 +2,29 @@
  * everything through ARDB (SQLite on device, in-memory in the browser). */
 (function () {
     const $ = id => document.getElementById(id);
-    let convList = [];        // what the list view currently shows
-    let currentThread = null; // { conv, mainNodes } for the open reader
+
+    // View state. `metaById` caches {title, provider} for every conversation
+    // currently on screen so the reader can render its header without an extra
+    // round-trip, regardless of whether we came from the list or from results.
+    let metaById = new Map();
+    let currentThread = null;   // { conv, mainNodes } for the open reader
+    let backTo = null;          // re-render the view the reader was opened from
 
     /* ---------------- boot ---------------- */
     window.addEventListener('DOMContentLoaded', async () => {
-        const { native } = await ARDB.init();
+        // The very first launch after the message_id upgrade reindexes the FTS
+        // table; surface that instead of a frozen splash on a big library.
+        const { native } = await ARDB.init((done, total) => {
+            if (total) $('file-status').innerText =
+                'Upgrading search index… ' + done + ' / ' + total;
+        });
         if (!native) {
             $('file-status').innerText =
                 'Browser preview mode: imports live in memory and vanish on refresh. ' +
                 'On the Android app they persist in a local database.';
         }
-        await refreshList();
-        if (convList.length) showLibraryUi();
+        await refresh();
+        if (metaById.size) showLibraryUi();
     });
 
     /* ---------------- import ---------------- */
@@ -52,56 +62,82 @@
         }
         $('file-status').innerText = status.trim() || 'Nothing imported.';
         e.target.value = ''; // allow re-selecting the same file
-        await refreshList();
-        if (convList.length) showLibraryUi();
+        await refresh();
+        if (metaById.size) showLibraryUi();
     });
 
     function showLibraryUi() {
         $('search').style.display = 'block';
         $('toolbar').style.display = 'flex';
+        $('filterBar').style.display = 'flex';
     }
 
     $('clearBtn').addEventListener('click', async () => {
         if (!confirm('Delete every imported conversation from this device?')) return;
         await ARDB.clearAll();
         $('search').value = '';
-        await refreshList();
+        await refresh();
     });
 
-    /* ---------------- list + search ---------------- */
-    async function refreshList() {
+    /* ---------------- search dispatch ---------------- */
+    // Three modes:
+    //   • empty query            → browse the conversation list
+    //   • query, bodies off      → title-only search (conversation rows)
+    //   • query, bodies on       → per-message search, grouped by conversation
+    async function refresh() {
         const q = ($('search').value || '').trim();
         const deep = $('searchBodies').checked;
-        convList = q ? await ARDB.searchConversations(q, deep)
-                     : await ARDB.listConversations();
-        renderList(q);
+        if (q && deep) {
+            const hits = await ARDB.searchMessages(q, currentFilters());
+            renderResults(hits, q);
+        } else {
+            const convs = q ? await ARDB.searchConversations(q, false)
+                            : await ARDB.listConversations();
+            renderList(convs, q);
+        }
+    }
+
+    function currentFilters() {
+        const f = {};
+        const p = $('filterProvider').value; if (p) f.provider = p;
+        const s = $('filterSender').value;   if (s) f.sender = s;
+        const d = $('filterDate').value;
+        if (d === 'month') f.since = Date.now() - 30 * 864e5;
+        else if (d === 'year') f.since = Date.now() - 365 * 864e5;
+        return f;
     }
 
     let searchTimer = null;
     const queueSearch = () => {
         clearTimeout(searchTimer);
-        searchTimer = setTimeout(refreshList, 200); // debounce keystrokes
+        searchTimer = setTimeout(refresh, 200); // debounce keystrokes
     };
     $('search').addEventListener('input', queueSearch);
-    $('searchBodies').addEventListener('change', refreshList);
+    $('searchBodies').addEventListener('change', refresh);
+    ['filterProvider', 'filterSender', 'filterDate'].forEach(id =>
+        $(id).addEventListener('change', refresh));
 
     const PROVIDER_LABEL = { claude: '🤖 Claude', chatgpt: '💬 ChatGPT' };
+    const providerBadge = p =>
+        '<span class="badge provider-' + escapeHtml(p) + '">' +
+        (PROVIDER_LABEL[p] || escapeHtml(p)) + '</span>';
 
-    function renderList(q) {
+    /* ---------------- conversation list ---------------- */
+    function renderList(convList, q) {
+        metaById = new Map(convList.map(c => [c.id, c]));
         $('readerView').style.display = 'none';
         const list = $('listView');
         list.style.display = 'block';
         list.innerHTML = '';
 
-        convList.forEach((c, i) => {
+        convList.forEach(c => {
             const item = document.createElement('div');
             item.className = 'chat-item';
-            item.onclick = () => openReader(i);
+            item.onclick = () => { backTo = () => renderList(convList, q); openReader(c.id); };
             item.innerHTML =
                 '<h3>' + escapeHtml(c.title) + '</h3>' +
                 '<div class="chat-meta">' +
-                    '<span class="badge provider-' + escapeHtml(c.provider) + '">' +
-                        (PROVIDER_LABEL[c.provider] || escapeHtml(c.provider)) + '</span>' +
+                    providerBadge(c.provider) +
                     (c.updated_at ? '<span>🗓 ' + new Date(c.updated_at).toLocaleDateString() + '</span>' : '') +
                     '<span>💬 ' + c.msg_count + ' messages</span>' +
                     (c.edit_count ? '<span class="badge">📜 ' + c.edit_count + ' past edit' +
@@ -116,16 +152,80 @@
             : convList.length + ' conversation' + (convList.length === 1 ? '' : 's');
     }
 
-    // FTS snippets arrive with \u0001…\u0002 sentinel markers (set in db.js);
+    /* ---------------- message search results ---------------- */
+    // hits arrive ordered by conversation recency then FTS rank, so a simple
+    // sequential group-by keeps each conversation's hits contiguous.
+    function renderResults(hits, q) {
+        metaById = new Map(hits.map(h => [h.conversation_id, { title: h.title, provider: h.provider }]));
+        $('readerView').style.display = 'none';
+        const list = $('listView');
+        list.style.display = 'block';
+        list.innerHTML = '';
+
+        const groups = [];
+        const byId = new Map();
+        hits.forEach(h => {
+            let g = byId.get(h.conversation_id);
+            if (!g) { g = { id: h.conversation_id, title: h.title, provider: h.provider, hits: [] };
+                      byId.set(h.conversation_id, g); groups.push(g); }
+            g.hits.push(h);
+        });
+
+        if (!groups.length) {
+            list.innerHTML = '<p class="empty">No messages match.</p>';
+            $('countLabel').innerText = '0 matches';
+            return;
+        }
+
+        const SHOWN = 3;
+        groups.forEach(g => {
+            const card = document.createElement('div');
+            card.className = 'result-group';
+            let html = '<div class="result-header">' + escapeHtml(g.title) + ' ' +
+                       providerBadge(g.provider) +
+                       '<span class="count">' + g.hits.length + ' hit' +
+                       (g.hits.length === 1 ? '' : 's') + '</span></div>';
+            html += g.hits.slice(0, SHOWN).map(h =>
+                '<div class="result-line" data-msg="' + escapeHtml(h.message_id) + '">' +
+                    '<span class="result-meta">' +
+                        (h.role === 'human' ? '👤' : '🤖') +
+                        (h.created_at ? ' ' + new Date(h.created_at).toLocaleDateString() : '') +
+                    '</span> ' +
+                    '<span class="result-snip">' + snippetHtml(h.snippet) + '</span>' +
+                '</div>').join('');
+            if (g.hits.length > SHOWN)
+                html += '<div class="result-more" data-msg="' + escapeHtml(g.hits[SHOWN].message_id) + '">' +
+                        '+ ' + (g.hits.length - SHOWN) + ' more…</div>';
+            card.innerHTML = html;
+
+            card.querySelectorAll('[data-msg]').forEach(el => {
+                el.onclick = () => {
+                    backTo = () => renderResults(hits, q);
+                    openReader(g.id, el.getAttribute('data-msg'), q);
+                };
+            });
+            list.appendChild(card);
+        });
+
+        const total = hits.length;
+        $('countLabel').innerText = total + ' match' + (total === 1 ? '' : 'es') +
+            ' in ' + groups.length + ' conversation' + (groups.length === 1 ? '' : 's');
+    }
+
+    // FTS / memory snippets arrive with … sentinel markers;
     // escape the text first, then swap the sentinels for <b> tags.
     function snippetHtml(s) {
-        return escapeHtml(s).replace(/\u0001/g, '<b>').replace(/\u0002/g, '</b>');
+        const B = String.fromCharCode(1), E = String.fromCharCode(2);
+        return escapeHtml(s)
+            .replace(new RegExp(B, 'g'), '<b>').replace(new RegExp(E, 'g'), '</b>');
     }
 
     /* ---------------- reader ---------------- */
-    async function openReader(i) {
-        const conv = convList[i];
-        const messages = await ARDB.getMessages(conv.id);
+    // targetMsgId / query are optional: set when opening from a search hit so
+    // we can jump to and highlight the match.
+    async function openReader(convId, targetMsgId, query) {
+        const conv = Object.assign({ id: convId }, metaById.get(convId) || {});
+        const messages = await ARDB.getMessages(convId);
         const { mainNodes } = ARTree.buildThread(messages);
         currentThread = { conv, mainNodes };
 
@@ -136,7 +236,12 @@
         let html =
             '<div class="reader-bar">' +
                 '<button class="sm-btn" id="backBtn">← Back</button>' +
-                '<h3>' + escapeHtml(conv.title) + '</h3>' +
+                '<h3>' + escapeHtml(conv.title || 'Conversation') + '</h3>' +
+                '<span class="match-nav" id="matchNav" style="display:none;">' +
+                    '<button class="sm-btn" id="prevMatch">↑</button>' +
+                    '<span class="match-count" id="matchCount"></span>' +
+                    '<button class="sm-btn" id="nextMatch">↓</button>' +
+                '</span>' +
                 '<button class="sm-btn" id="mdBtn">📥 .md</button>' +
             '</div>';
 
@@ -156,15 +261,19 @@
         });
 
         view.innerHTML = html;
-        $('backBtn').onclick = () => { renderList(($('search').value || '').trim()); };
+        $('backBtn').onclick = () => { if (backTo) backTo(); else refresh(); };
         $('mdBtn').onclick = downloadMd;
-        window.scrollTo(0, 0);
+
+        const terms = queryTerms(query);
+        const matches = terms.length ? highlightMatches(view, terms) : [];
+        setupMatchNav(matches, targetMsgId, view);
     }
 
     function renderMsg(msg) {
         const user = msg.role === 'human';
         const ts = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
-        let html = '<div class="msg ' + (user ? 'user' : 'assistant') + '">' +
+        let html = '<div class="msg ' + (user ? 'user' : 'assistant') +
+            '" data-msg-id="' + escapeHtml(msg.id) + '">' +
             '<div class="sender">' + (user ? '👤 Human' : '🤖 Assistant') +
             (ts ? '<span class="ts">' + ts + '</span>' : '') + '</div>' +
             '<div class="content-body">' + contentToHtml(msg) + '</div>';
@@ -173,6 +282,98 @@
                 msg.attachments.map(escapeHtml).join(', ') + '</div>';
         }
         return html + '</div>';
+    }
+
+    /* ---------------- search-hit highlighting ---------------- */
+    // Split the raw query into lowercased terms for substring highlighting.
+    function queryTerms(query) {
+        return (query || '').toLowerCase().split(/\s+/).filter(Boolean);
+    }
+    const escapeRegex = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Wrap every occurrence of any term in <mark>, operating on the already
+    // rendered DOM text nodes — never on HTML strings — so this can NEVER
+    // reintroduce markup from user text. Returns the marks in document order.
+    function highlightMatches(root, terms) {
+        const re = new RegExp('(' + terms.map(escapeRegex).join('|') + ')', 'gi');
+        const marks = [];
+        root.querySelectorAll('.content-body').forEach(body => {
+            const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+            const textNodes = [];
+            for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+                if (n.nodeValue && n.nodeValue.trim()) textNodes.push(n);
+            }
+            textNodes.forEach(node => {
+                const text = node.nodeValue;
+                re.lastIndex = 0;
+                if (!re.test(text)) return;
+                re.lastIndex = 0;
+                const frag = document.createDocumentFragment();
+                let last = 0, m;
+                while ((m = re.exec(text))) {
+                    if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+                    const mark = document.createElement('mark');
+                    mark.className = 'hit';
+                    mark.textContent = m[0];
+                    frag.appendChild(mark);
+                    marks.push(mark);
+                    last = m.index + m[0].length;
+                    if (m[0].length === 0) re.lastIndex++; // guard against zero-width
+                }
+                if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+                node.parentNode.replaceChild(frag, node);
+            });
+        });
+        return marks;
+    }
+
+    function setupMatchNav(matches, targetMsgId, view) {
+        // Locate the message we were asked to land on; if it sits inside a
+        // collapsed edit branch, open it and explain why the hit wasn't in
+        // the main thread.
+        let targetEl = null;
+        if (targetMsgId) {
+            targetEl = [...view.querySelectorAll('.msg')].find(el => el.dataset.msgId === targetMsgId);
+            if (targetEl) {
+                const details = targetEl.closest('details.edits');
+                if (details) {
+                    details.open = true;
+                    targetEl.insertAdjacentHTML('afterbegin',
+                        '<div class="edit-note">🔀 found in an earlier version of this message</div>');
+                }
+            }
+        }
+
+        const nav = $('matchNav');
+        if (!matches.length) {
+            // Nothing to highlight (e.g. opened from the list). Still honor a
+            // scroll target if we have one.
+            if (targetEl) targetEl.scrollIntoView({ block: 'center' });
+            else window.scrollTo(0, 0);
+            return;
+        }
+
+        // Start on the first match inside the target message, else the first
+        // match overall.
+        let cur = 0;
+        if (targetEl) {
+            const idx = matches.findIndex(mk => targetEl.contains(mk));
+            if (idx >= 0) cur = idx;
+        }
+
+        const count = $('matchCount');
+        const setCurrent = i => {
+            matches.forEach(mk => mk.classList.remove('current'));
+            cur = (i + matches.length) % matches.length;
+            const mk = matches[cur];
+            mk.classList.add('current');
+            count.innerText = (cur + 1) + ' of ' + matches.length;
+            mk.scrollIntoView({ block: 'center' });
+        };
+        $('prevMatch').onclick = () => setCurrent(cur - 1);
+        $('nextMatch').onclick = () => setCurrent(cur + 1);
+        nav.style.display = 'inline-flex';
+        setCurrent(cur);
     }
 
     function contentToHtml(msg) {

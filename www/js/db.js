@@ -10,10 +10,12 @@
  * backend is underneath.
  *
  * Interface:
- *   await ARDB.init()                          → { native: bool }
+ *   await ARDB.init(onProgress?)               → { native: bool }
  *   await ARDB.importConversations(convs)      → { added }
  *   await ARDB.listConversations()             → [{id, provider, title, updated_at, msg_count, edit_count}]
  *   await ARDB.searchConversations(q, deep)    → same shape + optional .snippet
+ *   await ARDB.searchMessages(q, filters)      → [{conversation_id, message_id, title,
+ *                                                  provider, role, created_at, snippet, rank}]
  *   await ARDB.getMessages(conversationId)     → normalized messages
  *   await ARDB.clearAll()
  */
@@ -32,7 +34,7 @@ window.ARDB = (function () {
             return r.values || [];
         }
 
-        async function init() {
+        async function init(onProgress) {
             try {
                 await plugin.createConnection({
                     ...db, version: 1, encrypted: false, mode: 'no-encryption', readonly: false
@@ -43,6 +45,9 @@ window.ARDB = (function () {
                 if (!/already exists/i.test(String(err && err.message || err))) throw err;
             }
             await plugin.open(db);
+            // Fresh installs get the current (3-column) FTS schema straight
+            // away; existing installs keep whatever they have here and are
+            // fixed up by migrate() below.
             await plugin.execute({
                 ...db, transaction: false, statements: `
                 CREATE TABLE IF NOT EXISTS conversations (
@@ -55,13 +60,58 @@ window.ARDB = (function () {
                     created_at INTEGER, ord INTEGER );
                 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
-                    USING fts5(text, conversation_id UNINDEXED);`
+                    USING fts5(text, conversation_id UNINDEXED, message_id UNINDEXED);`
             });
+            await migrate(onProgress);
+        }
+
+        async function userVersion() {
+            const r = await query('PRAGMA user_version');
+            return (r[0] && (r[0].user_version ?? r[0]['user_version'])) || 0;
+        }
+
+        // Schema migrations, keyed off PRAGMA user_version (0 = pre-versioning).
+        //
+        // v1: messages_fts gained a message_id column so search can point at
+        // the exact matching message, not just its conversation. The whole
+        // index is rebuilt from the messages table, which still holds every
+        // message's text — so this is fully offline and NOBODY re-imports.
+        async function migrate(onProgress) {
+            if (await userVersion() < 1) {
+                await plugin.execute({
+                    ...db, transaction: false, statements:
+                        'DROP TABLE IF EXISTS messages_fts;' +
+                        'CREATE VIRTUAL TABLE messages_fts USING ' +
+                        'fts5(text, conversation_id UNINDEXED, message_id UNINDEXED);'
+                });
+                const total = (await query(
+                    "SELECT COUNT(*) AS n FROM messages WHERE text != ''"))[0].n || 0;
+                // Rebuild in server-side windows: each INSERT…SELECT runs
+                // entirely inside SQLite (no bridge payload, no OOM risk) and
+                // covers up to REINDEX_CHUNK messages, so a big library can
+                // report progress during the one-time reindex.
+                for (let off = 0; off < total; off += REINDEX_CHUNK) {
+                    await plugin.run({
+                        ...db,
+                        statement: `INSERT INTO messages_fts (text, conversation_id, message_id)
+                            SELECT text, conversation_id, id FROM messages
+                            WHERE text != '' ORDER BY rowid LIMIT ? OFFSET ?`,
+                        values: [REINDEX_CHUNK, off]
+                    });
+                    if (onProgress) onProgress(Math.min(off + REINDEX_CHUNK, total), total);
+                }
+                await plugin.execute({
+                    ...db, transaction: false, statements: 'PRAGMA user_version = 1;'
+                });
+            }
         }
 
         // Keep each bridge payload small: one giant executeSet for a big
         // conversation can OOM the WebView and take the whole app down.
         const CHUNK = 200;
+        // Reindex windows are server-side INSERT…SELECT statements (no bound
+        // rows crossing the bridge), so they can be much larger than CHUNK.
+        const REINDEX_CHUNK = 500;
 
         async function importConversations(convs, onProgress) {
             let added = 0;
@@ -91,8 +141,8 @@ window.ARDB = (function () {
                     });
                     if (m.text) {
                         stmts.push({
-                            statement: 'INSERT INTO messages_fts (text, conversation_id) VALUES (?,?)',
-                            values: [m.text, c.id]
+                            statement: 'INSERT INTO messages_fts (text, conversation_id, message_id) VALUES (?,?,?)',
+                            values: [m.text, c.id, m.id]
                         });
                     }
                 }
@@ -148,7 +198,7 @@ window.ARDB = (function () {
             return query(
                 `WITH hits AS MATERIALIZED (
                     SELECT conversation_id, rowid AS rid,
-                           snippet(messages_fts, 0, '\u0001', '\u0002', '…', 12) AS snippet
+                           snippet(messages_fts, 0, char(1), char(2), '…', 12) AS snippet
                     FROM messages_fts WHERE messages_fts MATCH ?)
                  SELECT c.id, c.provider, c.title, c.updated_at, c.msg_count, c.edit_count,
                         snip.snippet AS snippet
@@ -162,6 +212,40 @@ window.ARDB = (function () {
                    AND id NOT IN (SELECT conversation_id FROM messages_fts
                                   WHERE messages_fts MATCH ?)
                  ORDER BY updated_at DESC`, [fq, like, fq]);
+        }
+
+        // Per-message search: one row per matching message (not per
+        // conversation), carrying the message_id so the reader can jump to it.
+        // filters: { provider?, sender? ('human'|'assistant'), since? (ms) }.
+        async function searchMessages(q, filters) {
+            filters = filters || {};
+            const fq = ftsQuery(q);
+            if (!fq) return [];
+            // Filters are applied in the OUTER query against the messages /
+            // conversations rows, so they compose freely with the FTS match.
+            const conds = [];
+            const vals = [fq];
+            if (filters.provider) { conds.push('c.provider = ?'); vals.push(filters.provider); }
+            if (filters.sender)   { conds.push('m.role = ?');     vals.push(filters.sender); }
+            if (filters.since != null) { conds.push('m.created_at >= ?'); vals.push(filters.since); }
+            const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+            // Same MATERIALIZED trick as searchConversations: snippet() can't
+            // run in an aggregate, and rank is only available on the FTS row,
+            // so both are captured here before joining out to the real tables.
+            return query(
+                `WITH hits AS MATERIALIZED (
+                    SELECT conversation_id, message_id,
+                           snippet(messages_fts, 0, char(1), char(2), '…', 12) AS snippet,
+                           rank AS rk
+                    FROM messages_fts WHERE messages_fts MATCH ?)
+                 SELECT h.conversation_id, h.message_id, c.title, c.provider,
+                        m.role, m.created_at, h.snippet, h.rk AS rank
+                 FROM hits h
+                 JOIN conversations c ON c.id = h.conversation_id
+                 JOIN messages m ON m.id = h.message_id
+                 ${where}
+                 ORDER BY c.updated_at DESC, h.conversation_id, h.rk`,
+                vals);
         }
 
         async function getMessages(conversationId) {
@@ -181,7 +265,7 @@ window.ARDB = (function () {
             });
         }
 
-        return { init, importConversations, listConversations, searchConversations, getMessages, clearAll, native: true };
+        return { init, importConversations, listConversations, searchConversations, searchMessages, getMessages, clearAll, native: true };
     }
 
     /* ------------------------------------------------------------------ *
@@ -192,7 +276,20 @@ window.ARDB = (function () {
         let msgs = new Map();      // conv id → messages
         let haystack = new Map();  // conv id → lowercased all-text
 
-        async function init() {}
+        async function init(onProgress) {}
+
+        const S = String.fromCharCode(1), E = String.fromCharCode(2);
+        // Highlight the first term with the same / sentinels the
+        // FTS backend emits, so the UI's snippet renderer is backend-agnostic.
+        function memSnippet(text, term) {
+            const idx = text.toLowerCase().indexOf(term);
+            if (idx < 0) return text.slice(0, 80);
+            const start = Math.max(0, idx - 30);
+            const end = Math.min(text.length, idx + term.length + 50);
+            return (start > 0 ? '…' : '') +
+                text.slice(start, idx) + S + text.slice(idx, idx + term.length) + E +
+                text.slice(idx + term.length, end) + (end < text.length ? '…' : '');
+        }
 
         async function importConversations(list, onProgress) {
             let added = 0;
@@ -223,21 +320,48 @@ window.ARDB = (function () {
                      : c.title.toLowerCase().includes(needle));
         }
 
+        // Mirror the FTS searchMessages: one row per matching message, with
+        // prefix-AND term semantics and the same filter set.
+        async function searchMessages(q, filters) {
+            filters = filters || {};
+            const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+            if (!terms.length) return [];
+            const out = [];
+            for (const c of await listConversations()) { // already updated_at desc
+                if (filters.provider && c.provider !== filters.provider) continue;
+                for (const m of (msgs.get(c.id) || [])) {
+                    const text = m.text || '';
+                    if (!text) continue;
+                    if (filters.sender && m.role !== filters.sender) continue;
+                    if (filters.since != null &&
+                        !(m.created_at != null && m.created_at >= filters.since)) continue;
+                    const low = text.toLowerCase();
+                    if (!terms.every(t => low.includes(t))) continue;
+                    out.push({
+                        conversation_id: c.id, message_id: m.id, title: c.title,
+                        provider: c.provider, role: m.role, created_at: m.created_at,
+                        snippet: memSnippet(text, terms[0]), rank: -1
+                    });
+                }
+            }
+            return out;
+        }
+
         async function getMessages(id) { return msgs.get(id) || []; }
         async function clearAll() { convs.clear(); msgs.clear(); haystack.clear(); }
 
-        return { init, importConversations, listConversations, searchConversations, getMessages, clearAll, native: false };
+        return { init, importConversations, listConversations, searchConversations, searchMessages, getMessages, clearAll, native: false };
     }
 
     /* ------------------------------------------------------------------ */
     let backend = null;
 
-    async function init() {
+    async function init(onProgress) {
         const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform &&
                             window.Capacitor.isNativePlatform() &&
                             window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorSQLite);
         backend = isNative ? sqliteBackend() : memoryBackend();
-        await backend.init();
+        await backend.init(onProgress);
         return { native: backend.native };
     }
 
@@ -247,6 +371,7 @@ window.ARDB = (function () {
         importConversations: call('importConversations'),
         listConversations: call('listConversations'),
         searchConversations: call('searchConversations'),
+        searchMessages: call('searchMessages'),
         getMessages: call('getMessages'),
         clearAll: call('clearAll'),
         isNative: () => backend && backend.native

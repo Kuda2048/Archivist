@@ -22,11 +22,14 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22          # node:sqlite (used by the test suite) needs 22+
           cache: npm
 
       - name: Install web dependencies
         run: npm ci
+
+      - name: Run tests
+        run: node test/run.js
 
       - name: Sync web assets into the Android project
         run: npx cap sync android
