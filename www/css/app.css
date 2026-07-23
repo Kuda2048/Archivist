@@ -113,3 +113,33 @@ pre { background: var(--pre-bg); padding: 10px; border-radius: 6px; overflow-x: 
 .attach { color: var(--muted); font-size: 0.82rem; font-style: italic; margin-top: 4px; }
 .empty { color: var(--muted); font-style: italic; }
 .content-body { overflow-wrap: break-word; }
+
+/* ---------------- motion ----------------
+ * Restrained, sub-200ms, and orientation-focused. Everything here is disabled
+ * under prefers-reduced-motion (below); the scroll-to-match itself is JS and
+ * keeps working with motion off. */
+#listView { animation: fade-rise 180ms ease; }
+#readerView { animation: fade-in 160ms ease; }           /* opacity only: keeps the sticky reader-bar from jumping */
+@keyframes fade-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes fade-in   { from { opacity: 0; } to { opacity: 1; } }
+
+.chat-item, .result-line { transition: transform 120ms ease, background 120ms ease; }
+.chat-item:active  { transform: scale(0.985); }
+.result-line:active { transform: scale(0.99); }
+
+/* Fade the disclosure content in rather than snapping it open. */
+details[open] > *:not(summary) { animation: fade-rise 150ms ease; }
+
+/* Pulse the match we land on so the eye finds it after the scroll. */
+mark.hit.current { animation: hit-pulse 180ms ease; }
+@keyframes hit-pulse { 0% { transform: scale(1); } 45% { transform: scale(1.18); } 100% { transform: scale(1); } }
+.msg.landed { animation: land-pulse 200ms ease-out; }
+@keyframes land-pulse { from { background: rgba(245, 158, 11, 0.22); } to { background: transparent; } }
+
+@media (prefers-reduced-motion: reduce) {
+    #listView, #readerView,
+    details[open] > *:not(summary),
+    mark.hit.current, .msg.landed { animation: none !important; }
+    .chat-item, .result-line { transition: none !important; }
+    .chat-item:active, .result-line:active { transform: none !important; }
+}

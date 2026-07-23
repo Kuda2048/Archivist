@@ -177,7 +177,11 @@
         convList.forEach(c => {
             const item = document.createElement('div');
             item.className = 'chat-item';
-            item.onclick = () => { backTo = () => renderList(convList, q); openReader(c.id); };
+            item.onclick = () => {
+                const y = window.scrollY; // restore the scroll spot on the way back
+                backTo = () => { renderList(convList, q); window.scrollTo(0, y); };
+                openReader(c.id);
+            };
             item.innerHTML =
                 '<h3>' + escapeHtml(c.title) + '</h3>' +
                 '<div class="chat-meta">' +
@@ -244,7 +248,8 @@
 
             card.querySelectorAll('[data-msg]').forEach(el => {
                 el.onclick = () => {
-                    backTo = () => renderResults(hits, q);
+                    const y = window.scrollY;
+                    backTo = () => { renderResults(hits, q); window.scrollTo(0, y); };
                     openReader(g.id, el.getAttribute('data-msg'), q);
                 };
             });
@@ -385,6 +390,7 @@
                     targetEl.insertAdjacentHTML('afterbegin',
                         '<div class="edit-note">🔀 found in an earlier version of this message</div>');
                 }
+                targetEl.classList.add('landed'); // one-shot orientation pulse
             }
         }
 
