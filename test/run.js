@@ -225,6 +225,53 @@ async function dbTests() {
         eq(hits[0].message_id, 'm2', 'migration: hit carries the correct message_id');
     }
 
+    // ---- self-heal: messages_fts missing entirely (the on-device failure) ----
+    // A half-finished v1 migration could leave the FTS table dropped but never
+    // recreated, so the next import hit "no such table: messages_fts". init()
+    // must recreate and repopulate it, and import must then succeed.
+    {
+        const sql = new DatabaseSync(':memory:');
+        sql.exec(`
+            CREATE TABLE conversations (id TEXT PRIMARY KEY, provider TEXT, title TEXT,
+                created_at INTEGER, updated_at INTEGER, msg_count INTEGER, edit_count INTEGER);
+            CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_id TEXT, parent_id TEXT,
+                role TEXT, text TEXT, blocks TEXT, attachments TEXT, created_at INTEGER, ord INTEGER);
+            INSERT INTO conversations VALUES ('c1','claude','Recovered',1,100,1,0);
+            INSERT INTO messages VALUES ('m1','c1',NULL,'human','strawberry fields',NULL,NULL,10,0);
+            PRAGMA user_version = 0;`); // note: NO messages_fts table at all
+
+        const ARDB = loadDbBackedBy(sql);
+        await ARDB.init();
+        ok(sql.prepare("SELECT 1 FROM sqlite_master WHERE name='messages_fts'").all().length === 1,
+            'self-heal: messages_fts recreated when missing');
+        eq((await ARDB.searchMessages('strawberry', {})).length, 1,
+            'self-heal: existing message reindexed without re-import');
+        // The exact failing operation — import DELETE FROM messages_fts — works.
+        let importThrew = false;
+        try {
+            await ARDB.importConversations([{
+                id: 'c1', provider: 'claude', title: 'Recovered', created_at: 1, updated_at: 100,
+                messages: [{ id: 'm1', parent_id: null, role: 'human', text: 'strawberry fields', created_at: 10, ord: 0 }]
+            }]);
+        } catch (_) { importThrew = true; }
+        ok(!importThrew, 'self-heal: re-import no longer throws on messages_fts');
+    }
+
+    // ---- idempotent: a second init() must not re-index or duplicate rows ----
+    {
+        const sql = new DatabaseSync(':memory:');
+        const ARDB = loadDbBackedBy(sql);
+        await ARDB.init();
+        await ARDB.importConversations([{
+            id: 'c1', provider: 'claude', title: 'Once', created_at: 1, updated_at: 1,
+            messages: [{ id: 'm1', parent_id: null, role: 'human', text: 'kiwi kiwi', created_at: 1, ord: 0 }]
+        }]);
+        let reran = false;
+        await ARDB.init((d, t) => { if (t) reran = true; }); // second boot
+        ok(!reran, 'idempotent: migration does not run again on a v1 database');
+        eq((await ARDB.searchMessages('kiwi', {})).length, 1, 'idempotent: no duplicate FTS rows');
+    }
+
     // ---- fresh install: import, per-message search, edit-branch hit ----
     {
         const sql = new DatabaseSync(':memory:');

@@ -81,40 +81,67 @@ window.ARDB = (function () {
             return (r[0] && (r[0].user_version ?? r[0]['user_version'])) || 0;
         }
 
+        // Create the current-schema FTS table if it is missing. Idempotent, and
+        // safe to call after a previously interrupted migration.
+        async function ensureFts() {
+            await plugin.execute({ ...db, transaction: false, statements:
+                'CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts ' +
+                'USING fts5(text, conversation_id UNINDEXED, message_id UNINDEXED);' });
+        }
+
+        // Does messages_fts already carry the v1 message_id column?
+        async function ftsHasMessageId() {
+            try { await query('SELECT message_id FROM messages_fts LIMIT 1'); return true; }
+            catch (e) { return false; }
+        }
+
         // Schema migrations, keyed off PRAGMA user_version (0 = pre-versioning).
         //
         // v1: messages_fts gained a message_id column so search can point at
-        // the exact matching message, not just its conversation. The whole
-        // index is rebuilt from the messages table, which still holds every
-        // message's text — so this is fully offline and NOBODY re-imports.
+        // the exact matching message, not just its conversation. The index is
+        // rebuilt from the messages table, which still holds every message's
+        // text — fully offline, NOBODY re-imports.
+        //
+        // Deliberately defensive: the earlier version dropped and recreated the
+        // FTS table in ONE batched execute, which on the device left some
+        // installs with the table dropped but never recreated ("no such table:
+        // messages_fts" on the next import). Now DROP and CREATE are separate
+        // calls, and ensureFts() guarantees the table exists whatever state a
+        // half-finished migration left behind.
         async function migrate(onProgress) {
-            if (await userVersion() < 1) {
-                await plugin.execute({
-                    ...db, transaction: false, statements:
-                        'DROP TABLE IF EXISTS messages_fts;' +
-                        'CREATE VIRTUAL TABLE messages_fts USING ' +
-                        'fts5(text, conversation_id UNINDEXED, message_id UNINDEXED);'
-                });
-                const total = (await query(
-                    "SELECT COUNT(*) AS n FROM messages WHERE text != ''"))[0].n || 0;
-                // Rebuild in server-side windows: each INSERT…SELECT runs
-                // entirely inside SQLite (no bridge payload, no OOM risk) and
-                // covers up to REINDEX_CHUNK messages, so a big library can
-                // report progress during the one-time reindex.
-                for (let off = 0; off < total; off += REINDEX_CHUNK) {
-                    await plugin.run({
-                        ...db,
-                        statement: `INSERT INTO messages_fts (text, conversation_id, message_id)
-                            SELECT text, conversation_id, id FROM messages
-                            WHERE text != '' ORDER BY rowid LIMIT ? OFFSET ?`,
-                        values: [REINDEX_CHUNK, off]
-                    });
-                    if (onProgress) onProgress(Math.min(off + REINDEX_CHUNK, total), total);
-                }
-                await plugin.execute({
-                    ...db, transaction: false, statements: 'PRAGMA user_version = 1;'
-                });
+            await ensureFts();
+            if (await userVersion() >= 1 && await ftsHasMessageId()) return;
+
+            // Old 2-column table → replace with the 3-column one. Separate
+            // statements so the DROP (and its FTS5 shadow tables) fully commits
+            // before the CREATE runs.
+            if (!(await ftsHasMessageId())) {
+                await plugin.execute({ ...db, transaction: false,
+                    statements: 'DROP TABLE IF EXISTS messages_fts;' });
+                await plugin.execute({ ...db, transaction: false, statements:
+                    'CREATE VIRTUAL TABLE messages_fts ' +
+                    'USING fts5(text, conversation_id UNINDEXED, message_id UNINDEXED);' });
             }
+
+            // Repopulate from messages in server-side windows (no bridge
+            // payload; progress-reported). Clear first so a retried migration
+            // can't double-index.
+            await plugin.run({ ...db, statement: 'DELETE FROM messages_fts', values: [] });
+            const total = (await query(
+                "SELECT COUNT(*) AS n FROM messages WHERE text != ''"))[0].n || 0;
+            for (let off = 0; off < total; off += REINDEX_CHUNK) {
+                await plugin.run({
+                    ...db,
+                    statement: `INSERT INTO messages_fts (text, conversation_id, message_id)
+                        SELECT text, conversation_id, id FROM messages
+                        WHERE text != '' ORDER BY rowid LIMIT ? OFFSET ?`,
+                    values: [REINDEX_CHUNK, off]
+                });
+                if (onProgress) onProgress(Math.min(off + REINDEX_CHUNK, total), total);
+            }
+            await plugin.execute({
+                ...db, transaction: false, statements: 'PRAGMA user_version = 1;'
+            });
         }
 
         // Keep each bridge payload small: one giant executeSet for a big
