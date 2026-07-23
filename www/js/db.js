@@ -59,10 +59,21 @@ window.ARDB = (function () {
                     role TEXT, text TEXT, blocks TEXT, attachments TEXT,
                     created_at INTEGER, ord INTEGER );
                 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);
+                CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                     USING fts5(text, conversation_id UNINDEXED, message_id UNINDEXED);`
             });
             await migrate(onProgress);
+        }
+
+        async function getSetting(key) {
+            const r = await query('SELECT value FROM settings WHERE key = ?', [key]);
+            return r.length ? r[0].value : null;
+        }
+        async function setSetting(key, value) {
+            await plugin.run({ ...db,
+                statement: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)',
+                values: [key, value] });
         }
 
         async function userVersion() {
@@ -265,7 +276,8 @@ window.ARDB = (function () {
             });
         }
 
-        return { init, importConversations, listConversations, searchConversations, searchMessages, getMessages, clearAll, native: true };
+        return { init, importConversations, listConversations, searchConversations, searchMessages,
+                 getMessages, getSetting, setSetting, clearAll, native: true };
     }
 
     /* ------------------------------------------------------------------ *
@@ -275,8 +287,11 @@ window.ARDB = (function () {
         let convs = new Map();     // id → conv meta
         let msgs = new Map();      // conv id → messages
         let haystack = new Map();  // conv id → lowercased all-text
+        let settings = new Map();  // key → value (lost on refresh, like the rest)
 
         async function init(onProgress) {}
+        async function getSetting(key) { return settings.has(key) ? settings.get(key) : null; }
+        async function setSetting(key, value) { settings.set(key, value); }
 
         const S = String.fromCharCode(1), E = String.fromCharCode(2);
         // Highlight the first term with the same / sentinels the
@@ -350,7 +365,8 @@ window.ARDB = (function () {
         async function getMessages(id) { return msgs.get(id) || []; }
         async function clearAll() { convs.clear(); msgs.clear(); haystack.clear(); }
 
-        return { init, importConversations, listConversations, searchConversations, searchMessages, getMessages, clearAll, native: false };
+        return { init, importConversations, listConversations, searchConversations, searchMessages,
+                 getMessages, getSetting, setSetting, clearAll, native: false };
     }
 
     /* ------------------------------------------------------------------ */
@@ -373,6 +389,8 @@ window.ARDB = (function () {
         searchConversations: call('searchConversations'),
         searchMessages: call('searchMessages'),
         getMessages: call('getMessages'),
+        getSetting: call('getSetting'),
+        setSetting: call('setSetting'),
         clearAll: call('clearAll'),
         isNative: () => backend && backend.native
     };

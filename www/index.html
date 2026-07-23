@@ -4,6 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Archive Reader</title>
+<!-- Apply the saved theme before first paint to avoid a flash. localStorage is
+     a fast cache; the SQLite settings table is the source of truth and app.js
+     reconciles from it on boot. -->
+<script>
+  try {
+    var t = localStorage.getItem('theme') || 'system';
+    var eff = t === 'system'
+      ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : t;
+    document.documentElement.setAttribute('data-theme', eff);
+  } catch (e) {}
+</script>
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -20,6 +31,7 @@
     <input type="text" id="search" class="search-box" placeholder="🔍 Search titles and messages…" style="display:none;">
     <div class="toolbar" id="toolbar">
         <label><input type="checkbox" id="searchBodies" checked> Search inside messages</label>
+        <button class="sm-btn" id="themeBtn" title="Switch theme">🖥️ System</button>
         <button class="sm-btn danger" id="clearBtn">🗑 Clear library</button>
         <span class="count" id="countLabel"></span>
     </div>

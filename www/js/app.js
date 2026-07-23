@@ -23,9 +23,53 @@
                 'Browser preview mode: imports live in memory and vanish on refresh. ' +
                 'On the Android app they persist in a local database.';
         }
+        applyTheme(await ARDB.getSetting('theme') || 'system'); // reconcile from DB
         await refresh();
         if (metaById.size) showLibraryUi();
     });
+
+    /* ---------------- theme ---------------- */
+    const THEME_ORDER = ['system', 'light', 'dark'];
+    const THEME_LABEL = { system: '🖥️ System', light: '☀️ Light', dark: '🌙 Dark' };
+    let themePref = 'system';
+
+    const prefersLight = () =>
+        window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+    const effectiveTheme = pref => pref === 'system' ? (prefersLight() ? 'light' : 'dark') : pref;
+
+    function applyTheme(pref) {
+        themePref = THEME_ORDER.includes(pref) ? pref : 'system';
+        const eff = effectiveTheme(themePref);
+        document.documentElement.setAttribute('data-theme', eff);
+        try { localStorage.setItem('theme', themePref); } catch (e) {} // fast-boot cache
+        $('themeBtn').innerText = THEME_LABEL[themePref];
+        syncStatusBar(eff);
+    }
+
+    // Keep the native status bar legible against the theme (Android); the
+    // plugin is absent in browser preview, so this is a no-op there.
+    function syncStatusBar(eff) {
+        const SB = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.StatusBar;
+        if (!SB) return;
+        try {
+            // Style.Light = light text (for dark backgrounds); Style.Dark = dark text.
+            SB.setStyle({ style: eff === 'dark' ? 'LIGHT' : 'DARK' });
+            if (SB.setBackgroundColor)
+                SB.setBackgroundColor({ color: eff === 'dark' ? '#0f172a' : '#f8fafc' });
+        } catch (e) {}
+    }
+
+    $('themeBtn').addEventListener('click', () => {
+        const next = THEME_ORDER[(THEME_ORDER.indexOf(themePref) + 1) % THEME_ORDER.length];
+        applyTheme(next);
+        ARDB.setSetting('theme', next);
+    });
+    // When following the system preference, react to the OS flipping it.
+    if (window.matchMedia) {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            if (themePref === 'system') applyTheme('system');
+        });
+    }
 
     /* ---------------- import ---------------- */
     $('fileInput').addEventListener('change', async e => {

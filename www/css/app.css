@@ -1,9 +1,35 @@
+/* Dark is the default theme. Light overrides live in the block below and are
+ * activated by data-theme="light" on <html>, which app.js sets from the saved
+ * preference (system preference is resolved to light/dark at runtime, so the
+ * CSS only needs the one override selector). Every color is a variable — do
+ * not hardcode colors in the rules below. */
 :root {
     --bg: #0f172a; --panel: #1e293b; --panel-hi: #253349; --line: #334155;
     --text: #f8fafc; --muted: #94a3b8;
     --amber: #f59e0b; --blue: #38bdf8; --accent: #d97706;
     --green: #34d399;
     --hit: #fde68a; --hit-text: #1c1917; --hit-current: #f59e0b;
+    --badge-bg: #422006; --badge-text: #f59e0b;
+    --badge-claude-bg: #431407; --badge-claude-text: #fdba74;
+    --badge-chatgpt-bg: #052e16; --badge-chatgpt-text: #34d399;
+    --details-bg: #16213a;
+    --edits-bg: #1c1917; --edits-border: #713f12;
+    --danger-bg: #450a0a; --danger-text: #fca5a5;
+    --pre-bg: #0b1120;
+}
+:root[data-theme="light"] {
+    --bg: #f8fafc; --panel: #ffffff; --panel-hi: #eef2f7; --line: #d8dee9;
+    --text: #0f172a; --muted: #64748b;
+    --amber: #b45309; --blue: #0369a1; --accent: #d97706;
+    --green: #047857;
+    --hit: #fde68a; --hit-text: #1c1917; --hit-current: #f59e0b;
+    --badge-bg: #fef3c7; --badge-text: #92400e;
+    --badge-claude-bg: #ffedd5; --badge-claude-text: #9a3412;
+    --badge-chatgpt-bg: #d1fae5; --badge-chatgpt-text: #065f46;
+    --details-bg: #f1f5f9;
+    --edits-bg: #fffbeb; --edits-border: #fcd34d;
+    --danger-bg: #fee2e2; --danger-text: #b91c1c;
+    --pre-bg: #f1f5f9;
 }
 * { box-sizing: border-box; }
 body {
@@ -21,7 +47,7 @@ h2 { margin: 0.2rem 0 1rem; }
 input[type="file"] { display: none; }
 .btn { background: var(--accent); color: white; padding: 10px 18px; border-radius: 8px; font-weight: bold; cursor: pointer; display: inline-block; }
 
-.search-box { width: 100%; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: white; margin-bottom: 0.6rem; font-size: 1rem; }
+.search-box { width: 100%; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--text); margin-bottom: 0.6rem; font-size: 1rem; }
 .toolbar { display: none; gap: 8px; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
 .toolbar label { color: var(--muted); font-size: 0.85rem; display: flex; align-items: center; gap: 5px; cursor: pointer; }
 .count { color: var(--muted); font-size: 0.85rem; margin-left: auto; }
@@ -49,9 +75,9 @@ input[type="file"] { display: none; }
 .chat-item:active { background: var(--panel-hi); }
 .chat-item h3 { margin: 0 0 4px; font-size: 1rem; }
 .chat-meta { color: var(--muted); font-size: 0.8rem; display: flex; gap: 10px; flex-wrap: wrap; }
-.badge { background: #422006; color: var(--amber); border-radius: 999px; padding: 1px 8px; font-size: 0.75rem; }
-.badge.provider-claude  { background: #431407; color: #fdba74; }
-.badge.provider-chatgpt { background: #052e16; color: var(--green); }
+.badge { background: var(--badge-bg); color: var(--badge-text); border-radius: 999px; padding: 1px 8px; font-size: 0.75rem; }
+.badge.provider-claude  { background: var(--badge-claude-bg); color: var(--badge-claude-text); }
+.badge.provider-chatgpt { background: var(--badge-chatgpt-bg); color: var(--badge-chatgpt-text); }
 .snippet { color: var(--muted); font-size: 0.82rem; margin-top: 5px; overflow: hidden; }
 .snippet b { color: var(--amber); }
 
@@ -59,7 +85,7 @@ input[type="file"] { display: none; }
 .reader-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 1rem; position: sticky; top: 0; background: var(--bg); padding: 0.6rem 0; z-index: 5; }
 .reader-bar h3 { margin: 0; font-size: 1.05rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sm-btn { background: var(--line); color: var(--text); border: none; padding: 7px 12px; border-radius: 6px; font-size: 0.85rem; cursor: pointer; flex-shrink: 0; }
-.sm-btn.danger { background: #450a0a; color: #fca5a5; }
+.sm-btn.danger { background: var(--danger-bg); color: var(--danger-text); }
 
 /* In-reader match navigation */
 .match-nav { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
@@ -77,13 +103,13 @@ mark.hit.current { background: var(--hit-current); box-shadow: 0 0 0 2px var(--h
 .msg.assistant .sender { color: var(--blue); }
 .ts { color: var(--muted); font-size: 0.75rem; font-weight: normal; }
 
-details { background: #16213a; padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid var(--line); margin: 0.5rem 0; }
+details { background: var(--details-bg); padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid var(--line); margin: 0.5rem 0; }
 summary { cursor: pointer; color: var(--muted); font-weight: 600; font-size: 0.88rem; }
-details.edits { border-color: #713f12; background: #1c1917; }
+details.edits { border-color: var(--edits-border); background: var(--edits-bg); }
 details.edits > summary { color: var(--amber); }
 details .msg { margin-top: 0.8rem; }
 
-pre { background: #0b1120; padding: 10px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-size: 0.85rem; }
+pre { background: var(--pre-bg); padding: 10px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-size: 0.85rem; }
 .attach { color: var(--muted); font-size: 0.82rem; font-style: italic; margin-top: 4px; }
 .empty { color: var(--muted); font-style: italic; }
 .content-body { overflow-wrap: break-word; }
