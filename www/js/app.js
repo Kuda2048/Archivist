@@ -24,16 +24,22 @@
         let totalConvs = 0, failed = [];
 
         for (const file of files) {
-            $('file-status').innerText = 'Importing ' + file.name + '…';
+            $('file-status').innerText = 'Reading ' + file.name + '…';
             try {
                 const json = JSON.parse(await file.text());
                 const result = ARImportRegistry.detectAndNormalize(json);
-                if (!result) { failed.push(file.name); continue; }
-                const { added } = await ARDB.importConversations(result.conversations);
+                if (!result) { failed.push(file.name + ' (format not recognized)'); continue; }
+                const { added } = await ARDB.importConversations(
+                    result.conversations,
+                    (done, total) => {
+                        $('file-status').innerText =
+                            'Importing ' + file.name + '… ' + done + ' / ' + total;
+                    });
                 totalConvs += added;
             } catch (err) {
                 console.error(err);
-                failed.push(file.name);
+                const why = err && err.message ? String(err.message).slice(0, 120) : 'unknown error';
+                failed.push(file.name + ' (' + why + ')');
             }
         }
 

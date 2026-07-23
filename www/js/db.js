@@ -59,28 +59,28 @@ window.ARDB = (function () {
             });
         }
 
-        async function importConversations(convs) {
+        // Keep each bridge payload small: one giant executeSet for a big
+        // conversation can OOM the WebView and take the whole app down.
+        const CHUNK = 200;
+
+        async function importConversations(convs, onProgress) {
             let added = 0;
             for (const c of convs) {
                 const { editCount } = window.ARTree.buildThread(c.messages);
 
-                // One executeSet per conversation, run inside a single
-                // transaction so an interrupted import can't leave a
-                // conversation row without its messages (or stale FTS rows).
+                // Deletes go first and the conversation row LAST: if the
+                // import dies partway, no half-imported conversation is
+                // visible, and orphan message rows are swept by the deletes
+                // on the next import of the same conversation.
                 // Re-importing the same export is common — replace cleanly.
-                const set = [
+                const stmts = [
                     { statement: 'DELETE FROM messages WHERE conversation_id = ?',
                       values: [c.id] },
                     { statement: 'DELETE FROM messages_fts WHERE conversation_id = ?',
-                      values: [c.id] },
-                    { statement: `INSERT OR REPLACE INTO conversations
-                         (id, provider, title, created_at, updated_at, msg_count, edit_count)
-                         VALUES (?,?,?,?,?,?,?)`,
-                      values: [c.id, c.provider, c.title, c.created_at, c.updated_at,
-                               c.messages.length, editCount] }
+                      values: [c.id] }
                 ];
                 for (const m of c.messages) {
-                    set.push({
+                    stmts.push({
                         statement: `INSERT OR REPLACE INTO messages
                             (id, conversation_id, parent_id, role, text, blocks, attachments, created_at, ord)
                             VALUES (?,?,?,?,?,?,?,?,?)`,
@@ -90,14 +90,27 @@ window.ARDB = (function () {
                                  m.created_at, m.ord]
                     });
                     if (m.text) {
-                        set.push({
+                        stmts.push({
                             statement: 'INSERT INTO messages_fts (text, conversation_id) VALUES (?,?)',
                             values: [m.text, c.id]
                         });
                     }
                 }
-                await plugin.executeSet({ ...db, set, transaction: true });
+                stmts.push({
+                    statement: `INSERT OR REPLACE INTO conversations
+                         (id, provider, title, created_at, updated_at, msg_count, edit_count)
+                         VALUES (?,?,?,?,?,?,?)`,
+                    values: [c.id, c.provider, c.title, c.created_at, c.updated_at,
+                             c.messages.length, editCount]
+                });
+
+                for (let i = 0; i < stmts.length; i += CHUNK) {
+                    await plugin.executeSet({
+                        ...db, set: stmts.slice(i, i + CHUNK), transaction: true
+                    });
+                }
                 added++;
+                if (onProgress) onProgress(added, convs.length);
             }
             return { added };
         }
@@ -181,7 +194,8 @@ window.ARDB = (function () {
 
         async function init() {}
 
-        async function importConversations(list) {
+        async function importConversations(list, onProgress) {
+            let added = 0;
             for (const c of list) {
                 const { editCount } = window.ARTree.buildThread(c.messages);
                 convs.set(c.id, {
@@ -192,6 +206,8 @@ window.ARDB = (function () {
                 msgs.set(c.id, c.messages);
                 haystack.set(c.id,
                     (c.title + ' ' + c.messages.map(m => m.text || '').join(' ')).toLowerCase());
+                added++;
+                if (onProgress) onProgress(added, list.length);
             }
             return { added: list.length };
         }
