@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -42,3 +45,20 @@ jobs:
         with:
           name: archive-reader-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      # Also publish the raw .apk on a rolling "latest-debug" release so it
+      # can be downloaded directly on a phone — no zip wrapper, no login.
+      - name: Prepare release APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk archivist-debug.apk
+
+      - name: Publish latest-debug release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-debug
+          name: Latest debug build
+          body: |
+            Rolling debug build of the latest `main`. Download
+            `archivist-debug.apk` below straight to your phone and tap it
+            to install (requires Android 9+).
+          prerelease: true
+          files: archivist-debug.apk

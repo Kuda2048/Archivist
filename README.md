@@ -70,11 +70,19 @@ npx cap sync && npx cap open android   # then press Run again
 ## Getting the APK without Android Studio
 
 Every push to `main` runs a GitHub Actions workflow that builds the debug
-APK. On GitHub: **Actions → Build APK → latest run → Artifacts →
-`archive-reader-debug`**. Download the zip, copy the `app-debug.apk`
-inside it to your phone, and tap it to install (allow installs from
-unknown sources when asked). You can also start a build manually from the
-Actions tab via "Run workflow".
+APK and publishes it two ways:
+
+- **Easiest — Releases:** open the repo's **Releases** page and download
+  `archivist-debug.apk` from the **Latest debug build** release. This is a
+  raw APK — download it on your phone and tap it to install (allow
+  installs from unknown sources when asked). No GitHub login needed.
+- **Actions artifact:** Actions → Build APK → latest run → Artifacts →
+  `archive-reader-debug`. Note this downloads as a **zip** (and requires
+  being logged in): extract it and install the `app-debug.apk` inside —
+  installing the zip itself fails with a "can't parse package" error.
+
+You can also start a build manually from the Actions tab via
+"Run workflow".
 
 ## Getting your exports onto the phone
 
