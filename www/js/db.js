@@ -27,18 +27,21 @@ window.ARDB = (function () {
         const plugin = window.Capacitor.Plugins.CapacitorSQLite;
         const db = { database: DB_NAME };
 
-        async function exec(statement, values) {
-            return plugin.run({ ...db, statement, values: values || [] });
-        }
         async function query(statement, values) {
             const r = await plugin.query({ ...db, statement, values: values || [] });
             return r.values || [];
         }
 
         async function init() {
-            await plugin.createConnection({
-                ...db, version: 1, encrypted: false, mode: 'no-encryption', readonly: false
-            });
+            try {
+                await plugin.createConnection({
+                    ...db, version: 1, encrypted: false, mode: 'no-encryption', readonly: false
+                });
+            } catch (err) {
+                // Native connections outlive webview reloads (app resume, dev
+                // reload); reuse the existing one instead of failing to boot.
+                if (!/already exists/i.test(String(err && err.message || err))) throw err;
+            }
             await plugin.open(db);
             await plugin.execute({
                 ...db, transaction: false, statements: `
@@ -59,20 +62,23 @@ window.ARDB = (function () {
         async function importConversations(convs) {
             let added = 0;
             for (const c of convs) {
-                // Re-importing the same export is common — replace cleanly.
-                await exec('DELETE FROM messages WHERE conversation_id = ?', [c.id]);
-                await exec('DELETE FROM messages_fts WHERE conversation_id = ?', [c.id]);
-
                 const { editCount } = window.ARTree.buildThread(c.messages);
-                await exec(
-                    `INSERT OR REPLACE INTO conversations
-                     (id, provider, title, created_at, updated_at, msg_count, edit_count)
-                     VALUES (?,?,?,?,?,?,?)`,
-                    [c.id, c.provider, c.title, c.created_at, c.updated_at,
-                     c.messages.length, editCount]);
 
-                // Batch inserts: one executeSet call per conversation.
-                const set = [];
+                // One executeSet per conversation, run inside a single
+                // transaction so an interrupted import can't leave a
+                // conversation row without its messages (or stale FTS rows).
+                // Re-importing the same export is common — replace cleanly.
+                const set = [
+                    { statement: 'DELETE FROM messages WHERE conversation_id = ?',
+                      values: [c.id] },
+                    { statement: 'DELETE FROM messages_fts WHERE conversation_id = ?',
+                      values: [c.id] },
+                    { statement: `INSERT OR REPLACE INTO conversations
+                         (id, provider, title, created_at, updated_at, msg_count, edit_count)
+                         VALUES (?,?,?,?,?,?,?)`,
+                      values: [c.id, c.provider, c.title, c.created_at, c.updated_at,
+                               c.messages.length, editCount] }
+                ];
                 for (const m of c.messages) {
                     set.push({
                         statement: `INSERT OR REPLACE INTO messages
@@ -90,7 +96,7 @@ window.ARDB = (function () {
                         });
                     }
                 }
-                if (set.length) await plugin.executeSet({ ...db, set });
+                await plugin.executeSet({ ...db, set, transaction: true });
                 added++;
             }
             return { added };
@@ -109,7 +115,8 @@ window.ARDB = (function () {
         }
 
         async function searchConversations(q, deep) {
-            const like = '%' + q.replace(/[%_]/g, ch => '\\' + ch) + '%';
+            // Escape the escape char itself as well as the LIKE wildcards.
+            const like = '%' + q.replace(/[\\%_]/g, ch => '\\' + ch) + '%';
             if (!deep) {
                 return query(
                     `SELECT id, provider, title, updated_at, msg_count, edit_count
@@ -118,19 +125,30 @@ window.ARDB = (function () {
             }
             const fq = ftsQuery(q);
             if (!fq) return listConversations();
+            // snippet() can't run inside an aggregate query (SQLite rejects
+            // FTS aux functions there), so compute per-row snippets in a
+            // MATERIALIZED CTE — the keyword stops the flattener from
+            // merging it back into the aggregate — then pick each
+            // conversation's first match via the min/max bare-column rule.
+            // The second branch adds title-only matches; its NOT IN keeps
+            // body matches from appearing twice in the result.
             return query(
-                `SELECT c.id, c.provider, c.title, c.updated_at, c.msg_count, c.edit_count,
+                `WITH hits AS MATERIALIZED (
+                    SELECT conversation_id, rowid AS rid,
+                           snippet(messages_fts, 0, '\u0001', '\u0002', '…', 12) AS snippet
+                    FROM messages_fts WHERE messages_fts MATCH ?)
+                 SELECT c.id, c.provider, c.title, c.updated_at, c.msg_count, c.edit_count,
                         snip.snippet AS snippet
                  FROM conversations c
-                 JOIN (SELECT conversation_id,
-                              snippet(messages_fts, 0, '\u0001', '\u0002', '…', 12) AS snippet,
-                              MIN(rowid) FROM messages_fts
-                       WHERE messages_fts MATCH ? GROUP BY conversation_id) snip
+                 JOIN (SELECT conversation_id, snippet, MIN(rid) FROM hits
+                       GROUP BY conversation_id) snip
                    ON snip.conversation_id = c.id
-                 UNION
+                 UNION ALL
                  SELECT id, provider, title, updated_at, msg_count, edit_count, NULL
                  FROM conversations WHERE title LIKE ? ESCAPE '\\'
-                 ORDER BY updated_at DESC`, [fq, like]);
+                   AND id NOT IN (SELECT conversation_id FROM messages_fts
+                                  WHERE messages_fts MATCH ?)
+                 ORDER BY updated_at DESC`, [fq, like, fq]);
         }
 
         async function getMessages(conversationId) {

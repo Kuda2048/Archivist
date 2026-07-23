@@ -44,10 +44,10 @@ input[type="file"] { display: none; }
 
 .msg { margin-bottom: 1rem; border-left: 3px solid var(--line); padding-left: 12px; }
 .msg.user { border-left-color: var(--amber); }
-.msg.claude { border-left-color: var(--blue); }
+.msg.assistant { border-left-color: var(--blue); }
 .sender { font-weight: bold; margin-bottom: 3px; display: flex; align-items: baseline; gap: 8px; }
 .msg.user .sender { color: var(--amber); }
-.msg.claude .sender { color: var(--blue); }
+.msg.assistant .sender { color: var(--blue); }
 .ts { color: var(--muted); font-size: 0.75rem; font-weight: normal; }
 
 details { background: #16213a; padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid var(--line); margin: 0.5rem 0; }

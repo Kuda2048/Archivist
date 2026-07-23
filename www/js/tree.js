@@ -10,9 +10,14 @@
  */
 window.ARTree = (function () {
 
-    // Sort key: prefer real timestamps, fall back to import order.
-    function sortKey(m) {
-        return (m.created_at != null ? m.created_at : 0) || m.ord || 0;
+    // Order siblings by timestamp when both sides have one, otherwise by
+    // import order. Never compare a timestamp against an ord: they live on
+    // different scales, and mixing them would make every timestamp-less
+    // message sort as oldest regardless of its actual position.
+    function cmpMsg(a, b) {
+        if (a.created_at != null && b.created_at != null && a.created_at !== b.created_at)
+            return a.created_at - b.created_at;
+        return (a.ord || 0) - (b.ord || 0);
     }
 
     /**
@@ -30,7 +35,7 @@ window.ARTree = (function () {
             if (!children.has(p)) children.set(p, []);
             children.get(p).push(m);
         });
-        children.forEach(arr => arr.sort((a, b) => sortKey(a) - sortKey(b)));
+        children.forEach(arr => arr.sort(cmpMsg));
 
         const mainNodes = [];
         const visited = new Set(); // guards against parent cycles in bad data
@@ -46,7 +51,7 @@ window.ARTree = (function () {
 
         // Safety net: if the walk found nothing, render linearly.
         if (!mainNodes.length) {
-            messages.slice().sort((a, b) => sortKey(a) - sortKey(b))
+            messages.slice().sort(cmpMsg)
                 .forEach(m => mainNodes.push({ msg: m, pastEdits: [] }));
         }
 

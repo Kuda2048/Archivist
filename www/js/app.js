@@ -158,7 +158,7 @@
     function renderMsg(msg) {
         const user = msg.role === 'human';
         const ts = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
-        let html = '<div class="msg ' + (user ? 'user' : 'claude') + '">' +
+        let html = '<div class="msg ' + (user ? 'user' : 'assistant') + '">' +
             '<div class="sender">' + (user ? '👤 Human' : '🤖 Assistant') +
             (ts ? '<span class="ts">' + ts + '</span>' : '') + '</div>' +
             '<div class="content-body">' + contentToHtml(msg) + '</div>';
