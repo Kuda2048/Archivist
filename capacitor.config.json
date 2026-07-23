@@ -1,0 +1,8 @@
+{
+  "appId": "com.example.archivereader",
+  "appName": "Archive Reader",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  }
+}
