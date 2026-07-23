@@ -1,10 +1,11 @@
 ext {
-    // App requirement: Android 9 Pie (API 28) through Android 17 (API 37).
-    // If your Android Studio / AGP doesn't offer SDK 37 yet, drop
-    // compileSdkVersion + targetSdkVersion to the newest it supports.
+    // App requirement: Android 9 Pie (API 28) minimum; built against
+    // SDK 35 (Android 15), the current Play Store target requirement.
+    // Bump compileSdkVersion + targetSdkVersion to 36 when your
+    // Android Studio / AGP supports it.
     minSdkVersion = 28
-    compileSdkVersion = 37
-    targetSdkVersion = 37
+    compileSdkVersion = 35
+    targetSdkVersion = 35
     androidxActivityVersion = '1.8.0'
     androidxAppCompatVersion = '1.6.1'
     androidxCoordinatorLayoutVersion = '1.2.0'

@@ -5,8 +5,8 @@ A local-first Android app (Capacitor) for reading AI chat exports. Supports
 branches, stores everything in SQLite, and searches instantly with FTS5
 full-text search. Nothing ever leaves your device.
 
-**System requirement:** Android 9 Pie (API 28) up to Android 17 (API 37).
-The SDK levels are pinned in `android/variables.gradle`.
+**System requirement:** Android 9 Pie (API 28) or newer. Built against
+SDK 35 (Android 15); the SDK levels are pinned in `android/variables.gradle`.
 
 ## Project layout
 
@@ -55,7 +55,7 @@ npx cap open android     # opens Android Studio
 ```
 
 The `android/` native project is committed to the repo with min SDK 28
-(Android 9) and target/compile SDK 37 (Android 17) already set, so there is
+(Android 9) and target/compile SDK 35 (Android 15) already set, so there is
 no need to run `npx cap add android`.
 
 In Android Studio: plug in your phone (with USB debugging on) or start an
