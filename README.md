@@ -67,6 +67,15 @@ Day-to-day loop after editing anything in `www/`:
 npx cap sync && npx cap open android   # then press Run again
 ```
 
+## Getting the APK without Android Studio
+
+Every push to `main` runs a GitHub Actions workflow that builds the debug
+APK. On GitHub: **Actions → Build APK → latest run → Artifacts →
+`archive-reader-debug`**. Download the zip, copy the `app-debug.apk`
+inside it to your phone, and tap it to install (allow installs from
+unknown sources when asked). You can also start a build manually from the
+Actions tab via "Run workflow".
+
 ## Getting your exports onto the phone
 
 - **Claude**: Settings → Privacy → Export data → email link → unzip →
