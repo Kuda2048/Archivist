@@ -462,7 +462,7 @@
     }
 
     /* ---------------- markdown export ---------------- */
-    function downloadMd() {
+    async function downloadMd() {
         const { conv, mainNodes } = currentThread;
 
         // Escape raw HTML outside code fences so a malicious message can't
@@ -495,7 +495,8 @@
                    '\n\n' + text + '\n\n';
         };
 
-        let md = '# ' + escapeOutsideFences(conv.title) + '\n\n---\n\n';
+        const title = conv.title || 'Conversation';
+        let md = '# ' + escapeOutsideFences(title) + '\n\n---\n\n';
         mainNodes.forEach(node => {
             node.pastEdits.forEach((branch, v) => {
                 md += '<details>\n<summary>📜 Past version ' + (v + 1) +
@@ -505,11 +506,41 @@
             md += msgToMd(node.msg) + '---\n\n';
         });
 
+        const filename = (title.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+                          || 'conversation') + '.md';
+        const btn = $('mdBtn');
+        const done = msg => { btn.innerText = msg; setTimeout(() => { btn.innerText = '📥 .md'; }, 2500); };
+
+        const Cap = window.Capacitor;
+        const plugins = (Cap && Cap.Plugins) || {};
+        // On device, an <a download> of a blob: URL silently does nothing —
+        // the WebView has no download manager for it. Write a real file to the
+        // app cache and hand it to the system share sheet instead, so the user
+        // can save it to Files/Drive or send it anywhere.
+        if (Cap && Cap.isNativePlatform && Cap.isNativePlatform() &&
+            plugins.Filesystem && plugins.Share) {
+            try {
+                await plugins.Filesystem.writeFile({
+                    path: filename, data: md, directory: 'CACHE', encoding: 'utf8', recursive: true
+                });
+                const { uri } = await plugins.Filesystem.getUri({ path: filename, directory: 'CACHE' });
+                await plugins.Share.share({
+                    title: title, files: [uri], dialogTitle: 'Export conversation as Markdown'
+                });
+            } catch (err) {
+                // Dismissing the share sheet rejects too — that isn't a failure.
+                if (/cancel/i.test(String(err && err.message || err))) return;
+                console.error(err);
+                done('⚠️ export failed');
+            }
+            return;
+        }
+
+        // Browser preview: the classic blob download works here.
         const blob = new Blob([md], { type: 'text/markdown' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = (conv.title.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
-                      || 'conversation') + '.md';
+        a.download = filename;
         a.click();
         URL.revokeObjectURL(a.href);
     }
