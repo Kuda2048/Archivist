@@ -309,6 +309,4 @@ Breaking changes are still possible.
 
 ## License
 
-
-
-License information has not yet been added to this README.
+Licensed under the [Apache License 2.0](LICENSE).
