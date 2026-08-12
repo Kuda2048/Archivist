@@ -23,9 +23,8 @@ Import `conversations.json` files from **Claude** and **ChatGPT**, browse conver
 
 
 <p align="center">
-  <img src="docs/screenshots/library.jpg" alt="Archivist conversation library" width="30%">
-  <img src="docs/screenshots/conversation.jpg" alt="Archivist conversation reader" width="30%">
-  <img src="docs/screenshots/search.jpg" alt="Archivist search" width="30%">
+  <img src="library.jpg" alt="Archivist conversation library" width="45%">
+  <img src="conversation.jpg" alt="Archivist conversation reader" width="45%">
 </p>
 
 ---
